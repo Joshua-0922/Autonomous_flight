@@ -1,115 +1,79 @@
-import random
-import heapq
-import matplotlib.pyplot as plt
-import numpy as np
-import itertools
+import rclpy
+from rclpy.node import Node
+from sensor_msgs.msg import Image, PointCloud2
+from nav_msgs.msg import Path
+from std_msgs.msg import String
 
-# 3차원 미로 생성 함수
-def generate_3d_maze(n, obstacle_prob):
-    maze = [[[random.random() > obstacle_prob for _ in range(n)] for _ in range(n)] for _ in range(n)]
-    maze[0][0][0] = True  # 시작 지점은 이동 가능
-    return maze
+class ZEDCamera:
+    def __init__(self, node):
+        self.node = node
+        self.image_subscriber = self.node.create_subscription(
+            Image,
+            '/zed_camera/depth/image_raw',
+            self.image_callback,
+            10)
+        self.latest_image = None
 
-# 휴리스틱 함수: 유클리드 거리 사용
-def heuristic(a, b):
-    return ((a[0] - b[0])**2 + (a[1] - b[1])**2 + (a[2] - b[2])**2)**0.5
+    def image_callback(self, msg):
+        self.latest_image = msg
+        self.node.get_logger().info('Received image frame.')
 
-# 장애물 근처 안전 거리 체크 함수
-def is_safe(maze, x, y, z, safety_distance):
-    n = len(maze)
-    for dx in np.arange(-safety_distance, safety_distance + 1, 0.5):
-        for dy in np.arange(-safety_distance, safety_distance + 1, 0.5):
-            for dz in np.arange(-safety_distance, safety_distance + 1, 0.5):
-                nx, ny, nz = int(round(x + dx)), int(round(y + dy)), int(round(z + dz))
-                if 0 <= nx < n and 0 <= ny < n and 0 <= nz < n:
-                    if not maze[nx][ny][nz]:
-                        return False
-    return True
+class ORBSLAM3:
+    def __init__(self, node):
+        self.node = node
+        # ORB_SLAM3 초기화 코드 추가
 
-# A* 알고리즘 구현
-def a_star_3d(maze, start, goal, safety_distance):
-    n = len(maze)
-    open_list = []
-    heapq.heappush(open_list, (0, start))
-    came_from = {}
-    g_score = {start: 0}
-    f_score = {start: heuristic(start, goal)}
+    def process_image(self, image):
+        # ORB_SLAM3를 통한 이미지 처리 및 포인트 클라우드 생성
+        point_cloud = None
+        self.node.get_logger().info('Processed image with ORB_SLAM3.')
+        return point_cloud
 
-    directions = list(itertools.product([-1, 0, 1], repeat=3))
-    directions.remove((0, 0, 0))  # 자기 자신 제외
+class PointCloudProcessor:
+    def __init__(self, node):
+        self.node = node
 
-    while open_list:
-        _, current = heapq.heappop(open_list)
+    def filter_and_segment(self, point_cloud):
+        # PCL을 이용한 포인트 클라우드 필터링 및 세그멘테이션
+        obstacles = []
+        self.node.get_logger().info('Filtered and segmented point cloud.')
+        return obstacles
 
-        if current == goal:
-            path = []
-            while current in came_from:
-                path.append(current)
-                current = came_from[current]
-            path.append(start)
-            path.reverse()
-            return path
+class PathPlanner:
+    def __init__(self, node):
+        self.node = node
 
-        neighbors = [
-            (current[0] + dx, current[1] + dy, current[2] + dz)
-            for dx, dy, dz in directions
-        ]
+    def plan_path(self, obstacles):
+        # A* 알고리즘을 통한 경로 계획
+        path = Path()
+        self.node.get_logger().info('Planned path avoiding obstacles.')
+        return path
 
-        for neighbor in neighbors:
-            x, y, z = neighbor
-            if 0 <= x < n and 0 <= y < n and 0 <= z < n and is_safe(maze, x, y, z, safety_distance):
-                tentative_g_score = g_score[current] + heuristic(current, neighbor)
+class DroneNavigation(Node):
+    def __init__(self):
+        super().__init__('drone_navigation')
+        self.zed_camera = ZEDCamera(self)
+        self.orb_slam3 = ORBSLAM3(self)
+        self.point_cloud_processor = PointCloudProcessor(self)
+        self.path_planner = PathPlanner(self)
+        self.path_publisher = self.create_publisher(Path, '/drone/path', 10)
+        self.timer = self.create_timer(0.1, self.navigation_callback)
 
-                if neighbor not in g_score or tentative_g_score < g_score[neighbor]:
-                    came_from[neighbor] = current
-                    g_score[neighbor] = tentative_g_score
-                    f_score[neighbor] = tentative_g_score + heuristic(neighbor, goal)
-                    heapq.heappush(open_list, (f_score[neighbor], neighbor))
+    def navigation_callback(self):
+        if self.zed_camera.latest_image is not None:
+            point_cloud = self.orb_slam3.process_image(self.zed_camera.latest_image)
+            if point_cloud is not None:
+                obstacles = self.point_cloud_processor.filter_and_segment(point_cloud)
+                path = self.path_planner.plan_path(obstacles)
+                self.path_publisher.publish(path)
+                self.get_logger().info('Published new path.')
 
-    return None  # 경로가 없는 경우
+def main(args=None):
+    rclpy.init(args=args)
+    node = DroneNavigation()
+    rclpy.spin(node)
+    node.destroy_node()
+    rclpy.shutdown()
 
-# 3차원 미로 시각화 함수
-def plot_3d_maze(maze, path=None):
-    n = len(maze)
-    maze_array = np.array(maze)
-    fig = plt.figure(figsize=(8, 8))
-    ax = fig.add_subplot(111, projection='3d')
-
-    # 미로 시각화 (장애물과 경로 구분)
-    for x in range(n):
-        for y in range(n):
-            for z in range(n):
-                if not maze[x][y][z]:
-                    ax.scatter(x, y, z, color='black', s=20)  # 장애물
-
-    if path:
-        path_x, path_y, path_z = zip(*path)
-        ax.plot(path_x, path_y, path_z, color='red', linewidth=2, marker='o')
-
-    ax.set_xlabel('X')
-    ax.set_ylabel('Y')
-    ax.set_zlabel('Z')
-    ax.set_xlim(0, n-1)
-    ax.set_ylim(0, n-1)
-    ax.set_zlim(0, n-1)
-    plt.show()
-
-# 메인 실행 부분
-if __name__ == "__main__":
-    n = int(input("미로 크기 (n x n x n): "))
-    obstacle_prob = float(input("장애물 비율 (0과 1 사이): "))
-    safety_distance = float(input("안전 거리 (float 값 허용): "))
-
-    start = tuple(map(int, input("시작 지점 (x y z): ").split()))
-    goal = tuple(map(int, input("도착 지점 (x y z): ").split()))
-
-    maze = generate_3d_maze(n, obstacle_prob)
-    path = a_star_3d(maze, start, goal, safety_distance)
-
-    if path:
-        print("경로를 찾았습니다:")
-        print(path)
-        plot_3d_maze(maze, path)
-    else:
-        print("경로를 찾을 수 없습니다.")
-        plot_3d_maze(maze)
+if __name__ == '__main__':
+    main()
